@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Шутер Вар: Стихии (DEMO)</title>
+  <style>
+    body { background: #1b1b23; color: #fff; font-family: monospace; text-align: center; }
+    canvas { background: #23232e; display: block; margin: 16px auto; border: 2px solid #333; }
+    h2 { margin-bottom: 0; }
+    p { margin-top: 2px; }
+    #info { margin: 0 0 10px 0; }
+  </style>
+</head>
+<body>
+  <h2>Шутер Вар: Стихии - DEMO</h2>
+  <div id="info">Управление: ←→↑↓ — движение, Пробел — стрелять, 1-5 — смена стихии (тест)<br>
+  Собирай бонусы и энергофрагменты!</div>
+  <canvas id="game" width="512" height="384"></canvas>
+  <script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+
+const ELEMENTS = [
+  {name:'Металл', color:'#AAA', type:'single'},
+  {name:'Электричество', color:'#4af', type:'aoe'},
+  {name:'Лёд', color:'#9ef', type:'slow'},
+  {name:'Огонь', color:'#f44', type:'dot'},
+  {name:'Ядерный', color:'#5f5', type:'nuke'}
+];
+
+let keys = {};
+document.addEventListener('keydown', e => keys[e.key]=true);
+document.addEventListener('keyup', e => keys[e.key]=false);
+
+class Player {
+  constructor() {
+    this.x = W/2; this.y = H-40;
+    this.w = 24; this.h = 16;
+    this.hp = 100;
+    this.element = 0; // индекс ELEMENTS
+    this.score = 0;
+    this.invuln = 0; // невидимость/щит
+    this.shield = 0;
+    this.bonuses = {};
+    this.magnet = false;
+  }
+  move() {
+    if(keys['ArrowLeft']) this.x -= 4;
+    if(keys['ArrowRight']) this.x += 4;
+    if(keys['ArrowUp']) this.y -= 4;
+    if(keys['ArrowDown']) this.y += 4;
+    this.x = Math.max(0,Math.min(W-this.w,this.x));
+    this.y = Math.max(0,Math.min(H-this.h,this.y));
+    for(let i=1;i<=5;i++) if(keys[i+'']) this.element=i-1;
+  }
+  draw() {
+    ctx.globalAlpha = (this.invuln>0&&this.bonuses.invisible)?0.35:1;
+    // Корабль
+    ctx.fillStyle = ELEMENTS[this.element].color;
+    // ▟█▙ ▜██▛
+    ctx.fillRect(this.x+4, this.y, 16, 8);
+    ctx.fillRect(this.x, this.y+8, 24, 8);
+    // Щит
+    if(this.shield>0) {
+      ctx.strokeStyle = "#ff0";
+      ctx.beginPath();
+      ctx.arc(this.x+12,this.y+8,18,0,7); ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+  }
+  shoot() {
+    if(ELEMENTS[this.element].type==='single')
+      game.bullets.push(new Bullet(this.x+12,this.y, this.element));
+    if(ELEMENTS[this.element].type==='aoe')
+      game.effects.push(new ElectricEffect(this.x+12,this.y, this.element));
+    if(ELEMENTS[this.element].type==='slow')
+      game.bullets.push(new IceBullet(this.x+12,this.y, this.element));
+    if(ELEMENTS[this.element].type==='dot')
+      game.bullets.push(new FireBullet(this.x+12,this.y, this.element));
+    if(ELEMENTS[this.element].type==='nuke')
+      game.effects.push(new NukeEffect());
+  }
+}
+
+class Enemy {
+  constructor(type='AIR', sector=1) {
+    this.type = type;
+    this.x = Math.random()*(W-32)+16;
+    this.y = -20;
+    this.hp = type==='BOSS'?80:(type==='GROUND'?24:15+sector*2);
+    this.maxhp = this.hp;
+    this.speed = 1.2 + Math.random();
+    this.trajectory = this.getTrajectory(type);
+    this.frame = 0;
+    this.dir = 1;
+    this.slow = 0; this.burn=0;
+  }
+  getTrajectory(type) {
+    return type==='AIR'?'sineWave':type==='GROUND'?'sharpTurn':'circleCharge';
+  }
+  update() {
+    this.frame++;
+    if(this.trajectory==='sineWave')
+      this.x += Math.sin(this.y*0.07)*2;
+    if(this.trajectory==='sharpTurn' && this.frame%60===0)
+      this.dir*=-1;
+    if(this.trajectory==='sharpTurn')
+      this.x += this.dir*3;
+    if(this.trajectory==='circleCharge')
+      this.x += Math.sin(this.frame/10)*3;
+    let s = this.slow>0?0.3:this.speed;
+    this.y += s;
+    if(this.burn>0) this.hp-=0.18; // огонь
+    this.slow=Math.max(0,this.slow-1);
+    this.burn=Math.max(0,this.burn-1);
+  }
+  draw() {
+    ctx.save();
+    ctx.translate(this.x,this.y);
+    if(this.type==='AIR') {
+      ctx.fillStyle='#888'; ctx.fillRect(-12,-7,24,14);
+      ctx.fillStyle='#333'; ctx.fillRect(-4,-3,8,6);
+    }
+    if(this.type==='GROUND') {
+      ctx.fillStyle='#a63'; ctx.fillRect(-14,0,28,12);
+      ctx.fillStyle='#333'; ctx.fillRect(-3,2,6,8);
+    }
+    if(this.type==='BOSS') {
+      ctx.strokeStyle="#0ff"; ctx.lineWidth=2;
+      ctx.beginPath(); ctx.arc(0,0,24,0,7); ctx.stroke();
+      ctx.fillStyle="#fff"; ctx.fillRect(-8,-8,16,16);
+    }
+    // Эффекты
+    if(this.slow>0) { ctx.strokeStyle="#9ef"; ctx.strokeRect(-14,-9,28,18);}
+    if(this.burn>0) { ctx.strokeStyle="#f44"; ctx.strokeRect(-16,-11,32,22);}
+    // HP bar
+    if(this.hp<this.maxhp) {
+      ctx.fillStyle = "#f44";
+      ctx.fillRect(-12,-14,24,3);
+      ctx.fillStyle = "#0f0";
+      ctx.fillRect(-12,-14,24*this.hp/this.maxhp,3);
+    }
+    ctx.restore();
+  }
+}
+
+class Bullet {
+  constructor(x,y,element=0) {
+    this.x = x; this.y = y;
+    this.r = 3;
+    this.element = element;
+    this.speed = -7;
+  }
+  update() { this.y += this.speed; }
+  draw() {
+    ctx.fillStyle = ELEMENTS[this.element].color;
+    ctx.fillRect(this.x-2,this.y-6,4,12);
+  }
+}
+class IceBullet extends Bullet {
+  update() { this.y+=this.speed; }
+  draw() {
+    ctx.fillStyle="#9ef";
+    ctx.beginPath();ctx.arc(this.x,this.y,4,0,7);ctx.fill();
+  }
+}
+class FireBullet extends Bullet {
+  update() { this.y+=this.speed; }
+  draw() {
+    ctx.fillStyle="#f44";
+    ctx.fillRect(this.x-2,this.y-2,4,8);
+  }
+}
+
+class ElectricEffect {
+  constructor(x,y,element) {
+    this.x=x; this.y=y; this.r=70; this.t=22;
+    this.element=element;
+  }
+  update() { this.t--; }
+  draw() {
+    ctx.strokeStyle="#4af"; ctx.lineWidth=3;
+    ctx.beginPath();
+    ctx.arc(this.x,this.y,this.r,0,7); ctx.stroke();
+    ctx.lineWidth=1;
+    // 8-bit молнии
+    ctx.font="16px monospace";
+    ctx.fillStyle="#4af";
+    ctx.fillText("⚡⚡", this.x-16, this.y+8);
+  }
+}
+class NukeEffect {
+  constructor() { this.t=20; }
+  update() { this.t--; }
+  draw() {
+    ctx.strokeStyle="#5f5";
+    ctx.beginPath();ctx.arc(W/2,H/2,100,0,7);ctx.stroke();
+    ctx.font="32px monospace";
+    ctx.fillStyle="#5f5";
+    ctx.fillText("☢️", W/2-18, H/2+10);
+  }
+}
+
+class Bonus {
+  constructor(x,y,type) {
+    this.x=x; this.y=y; this.type=type;
+    this.t=0;
+  }
+  update() { this.y+=2; }
+  draw() {
+    ctx.save();
+    ctx.translate(this.x,this.y);
+    ctx.font="16px monospace";
+    ctx.textAlign='center';
+    ctx.fillStyle=['#ff0','#4af','#fff','#fa0','#5f5','#f0f'][this.type];
+    let icons=['+','⚡','👁️','🛡️','☢️','🧲'];
+    ctx.fillText(icons[this.type],0,0);
+    ctx.restore();
+  }
+}
+
+class Station {
+  constructor(x,y,type) {
+    this.x=x;this.y=y;this.type=type;
+    this.t=220;
+  }
+  update(){this.t--;}
+  draw(){
+    ctx.save();
+    ctx.translate(this.x,this.y);
+    ctx.strokeStyle="#fff";
+    ctx.strokeRect(-12,-12,24,24);
+    ctx.font="18px monospace";
+    ctx.fillStyle="#fff";
+    let icons=['+','⚡','👁️','🛡️','☢️','🧲'];
+    ctx.fillText(icons[this.type],0,7);
+    ctx.restore();
+  }
+}
+
+// Игровая логика
+const game = {
+  player: new Player(),
+  enemies: [],
+  bullets: [],
+  bonuses: [],
+  stations: [],
+  effects: [],
+  lastShot:0,
+  tick:0,
+  sector:1,
+  enemySpeed:1,
+  spawnEnemy() {
+    let t=this.tick;
+    let type = (t%500===0 && this.sector>=5)?'BOSS':
+      ((t%120===0 && this.sector>2)?'GROUND':'AIR');
+    this.enemies.push(new Enemy(type, this.sector));
+  },
+  spawnStation() {
+    let type = Math.floor(Math.random()*6);
+    this.stations.push(new Station(Math.random()*(W-40)+20,Math.random()*180+40,type));
+  },
+  update() {
+    this.tick++;
+    // Перелистывание секторов
+    let score = this.player.score;
+    if(score>=1000) this.sector=7;
+    else if(score>=700) this.sector=6;
+    else if(score>=500) this.sector=5;
+    else if(score>=300) this.sector=4;
+    else if(score>=200) this.sector=3;
+    else if(score>=100) this.sector=2;
+    else this.sector=1;
+
+    // Открытие новых стихий
+    if(score>=100) this.player.element=Math.max(this.player.element,1);
+    if(score>=300) this.player.element=Math.max(this.player.element,2);
+    if(score>=500) this.player.element=Math.max(this.player.element,3);
+    if(score>=1000) this.player.element=Math.max(this.player.element,4);
+
+    this.player.move();
+
+    if(keys[' '] && this.tick-this.lastShot> ((this.player.bonuses.fast)?5:13) ) {
+      this.player.shoot();
+      this.lastShot = this.tick;
+    }
+
+    if(this.tick%40===0) this.spawnEnemy();
+    if(this.tick%300===0) this.spawnStation();
+
+    this.enemies.forEach(e=>e.update());
+    this.bullets.forEach(b=>b.update());
+    this.stations.forEach(s=>s.update());
+    this.bonuses.forEach(b=>b.update());
+    this.effects.forEach(e=>e.update());
+
+    // Магнит: притягивает бонусы
+    if(this.player.bonuses.magnet) {
+      this.bonuses.forEach(b=>{
+        let dx = (this.player.x+12)-b.x, dy=(this.player.y+8)-b.y;
+        let d=Math.sqrt(dx*dx+dy*dy);
+        if(d<140) { b.x+=dx*0.07; b.y+=dy*0.07;}
+      });
+    }
+
+    // Коллизии
+    // Пуля/враг
+    this.bullets.forEach((b,bi)=>{
+      this.enemies.forEach((e,ei)=>{
+        let dx=b.x-e.x, dy=b.y-e.y;
+        if(dx*dx+dy*dy<256) {
+          if(b instanceof IceBullet) { e.hp-=3; e.slow=80;}
+          else if(b instanceof FireBullet) {e.hp-=2; e.burn=90;}
+          else e.hp-=5;
+          this.bullets.splice(bi,1);
+        }
+      });
+    });
+    // ElectricEffect
+    this.effects.forEach((ef,efi)=>{
+      if(ef instanceof ElectricEffect) {
+        this.enemies.forEach(e=>{
+          let dx=ef.x-e.x, dy=ef.y-e.y;
+          if(dx*dx+dy*dy<ef.r*ef.r) {
+            if(ef.t===22) e.hp-=8;
+            e.slow=40;
+          }
+        });
+      }
+      if(ef instanceof NukeEffect && ef.t===20) {
+        this.enemies.forEach(e=>e.hp=0);
+      }
+    });
+    // Смерть врага и дроп бонуса
+    this.enemies = this.enemies.filter(e=>{
+      if(e.hp<=0) {
+        this.player.score+=10*(e.type==='BOSS'?10:1);
+        // шанс дропа бонуса
+        if(Math.random()<0.23)
+          this.bonuses.push(new Bonus(e.x,e.y,Math.floor(Math.random()*6)));
+        return false;
+      }
+      if(e.y>H+20) return false;
+      return true;
+    });
+
+    // Сбор бонуса
+    this.bonuses = this.bonuses.filter(b=>{
+      let dx = b.x-this.player.x-12, dy = b.y-this.player.y-8;
+      if(dx*dx+dy*dy<400) {
+        // применить бонус
+        if(b.type===0) this.player.hp=Math.min(100,this.player.hp+30);
+        if(b.type===1) { this.player.bonuses.fast=true; setTimeout(()=>this.player.bonuses.fast=false,10000);}
+        if(b.type===2) { this.player.invuln=120; this.player.bonuses.invisible=true;}
+        if(b.type===3) { this.player.shield=3;}
+        if(b.type===4) { this.player.element=4; }
+        if(b.type===5) { this.player.bonuses.magnet=true;}
+        return false;
+      }
+      if(b.y>H+20) return false;
+      return true;
+    });
+
+    // Станции
+    this.stations = this.stations.filter(s=>{
+      let dx = s.x-this.player.x-12, dy = s.y-this.player.y-8;
+      if(dx*dx+dy*dy<400 && s.t>0) {
+        this.bonuses.push(new Bonus(s.x,s.y,s.type));
+        return false;
+      }
+      return s.t>0;
+    });
+
+    // Щит/урон
+    this.enemies.forEach(e=>{
+      let dx = e.x-this.player.x-12, dy = e.y-this.player.y-8;
+      if(dx*dx+dy*dy<400 && e.hp>0) {
+        if(this.player.shield>0) this.player.shield--;
+        else if(this.player.invuln<=0) this.player.hp-=8;
+      }
+    });
+    // Таймеры невидимости и т.д.
+    if(this.player.invuln>0) this.player.invuln--;
+    if(this.player.invuln===0) this.player.bonuses.invisible=false;
+    if(this.player.hp<=0) {
+      setTimeout(()=>{alert("Вы погибли!\nСчёт: "+this.player.score);document.location.reload();},50);
+      this.player.hp=10000; // заморозить
+    }
+    this.bullets = this.bullets.filter(b=>b.y>-20);
+    this.effects = this.effects.filter(e=>e.t>0);
+  },
+  draw() {
+    ctx.clearRect(0,0,W,H);
+    // Фоновые сектора
+    ctx.globalAlpha=0.17;
+    ctx.fillStyle=['#fff','#4af','#9ef','#f44','#5f5','#fa0','#f0f'][this.sector%7];
+    ctx.fillRect(0,0,W,H);
+    ctx.globalAlpha=1;
+
+    // Эффекты
+    this.effects.forEach(e=>e.draw());
+    // Бонусы
+    this.bonuses.forEach(b=>b.draw());
+    // Станции
+    this.stations.forEach(s=>s.draw());
+    // Враги
+    this.enemies.forEach(e=>e.draw());
+    // Пули
+    this.bullets.forEach(b=>b.draw());
+    // Игрок
+    this.player.draw();
+
+    // UI
+    ctx.fillStyle="#fff";
+    ctx.font="16px monospace";
+    ctx.fillText(`HP: ${this.player.hp}`, 10, 18);
+    ctx.fillText(`Стихия: ${ELEMENTS[this.player.element].name}`, 110, 18);
+    ctx.fillText(`Счёт: ${this.player.score}`, 260, 18);
+    ctx.fillText(`Сектор: ${this.sector}`, 400, 18);
+
+    if(this.sector===1) ctx.fillText("Только металлическое оружие", 138,40);
+    if(this.sector===3) ctx.fillText("Открыта стихия Электричество!", 120,40);
+    if(this.sector===5) ctx.fillText("Босс: Громовержец!", 160,40);
+    if(this.sector===7) ctx.fillText("Финал! Штурм Цитадели!", 138,40);
+
+    if(this.player.bonuses.magnet)
+      ctx.fillText("Магнит: авто-сбор энергофрагментов", 110,370);
+  }
+};
+
+function loop() {
+  game.update();
+  game.draw();
+  requestAnimationFrame(loop);
+}
+loop();
+  </script>
+</body>
+</html>
